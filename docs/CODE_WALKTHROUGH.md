@@ -583,6 +583,60 @@ DEFAULT_PARAMS = dict(n_estimators=400, learning_rate=0.03, num_leaves=7,
 
 ---
 
+## `src/probabilistic.py` — scoring & building intervals (Project 3)
+
+### Scores
+```python
+def winkler_score(y_true, lo, hi, alpha):
+    width = hi - lo
+    below = (lo - y_true) * (y_true < lo)
+    above = (y_true - hi) * (y_true > hi)
+    return float(np.mean(width + (2/alpha) * (below + above)))
+```
+- The one score that ranks interval methods *honestly*: width **plus** a miss
+  penalty of `2/alpha × shortfall`. `coverage` and `mean_interval_width` report the
+  two halves separately; Winkler is the proper combined score. `pinball_loss` is the
+  quantile analogue.
+
+### The interval backtest
+```python
+def rolling_origin_intervals(y, g, initial, h, step=1):
+    while cutoff + h <= n:
+        mean, lo, hi = g(y.iloc[:cutoff], h)     # interval forecaster
+        ... record y_true, mean, lo, hi per step_ahead ...
+```
+- The probabilistic twin of `backtest.rolling_origin`: the forecaster `g(train,h)`
+  returns **(mean, lo, hi)** instead of a point. `summarize_intervals` then turns a
+  run into coverage / width / Winkler — so every interval method is judged on
+  identical folds, same as the point models.
+
+### Conformal calibration
+```python
+def conformal_forecast(y, point_forecaster, h, initial, alpha, ...):
+    res = backtest_residuals(y, point_forecaster, initial, h, step, use_log)
+    q = res.groupby("step_ahead")["resid"].apply(lambda r: np.quantile(np.abs(r), 1-alpha))
+    mean = point_forecaster(y, h)
+    return mean, mean*np.exp(-q), mean*np.exp(q)     # multiplicative band (log space)
+```
+- Calibrate the `(1-alpha)` quantile of **out-of-sample** `|residual|` **per horizon**
+  (longer horizons → wider), then wrap the point forecast. Residuals are computed in
+  **log space**, so `exp(±q)` gives a *multiplicative*, asymmetric-in-levels band —
+  correct for GDP. `conformal_split_evaluate` does the honest version: calibrate on
+  early folds, measure coverage on later ones.
+
+### Adaptive Conformal Inference
+```python
+hw = np.quantile(np.abs(resid_hist), 1 - alpha_t)        # working level
+miss = int(not (lo <= y_t <= hi))
+alpha_t = np.clip(alpha_t + gamma * (alpha - miss), 1e-3, 0.999)   # the ACI update
+```
+- The whole of ACI is that one update line: a **miss widens** the next interval
+  (lowers `alpha_t`), a hit tightens it. It's feedback control on coverage, so the
+  long-run rate tracks the target **even when the residual distribution drifts** —
+  which point-in-time conformal can't promise on non-exchangeable time series.
+
+---
+
 ## How the notebooks compose it (the payoff)
 
 A whole model comparison collapses to a few lines because the contract is uniform:
