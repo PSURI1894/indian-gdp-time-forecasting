@@ -11,7 +11,7 @@ so it transfers to real forecasting work.
 | # | Folder | Focus | Status |
 |---|--------|-------|--------|
 | **P1** | [`p1_foundations/`](p1_foundations/) | Foundations & classical: transforms, decomposition, stationarity, baselines, **honest evaluation**, ETS, ARIMA/SARIMA, Theta, Prophet, ARIMAX | ✅ complete (9 notebooks: 00–08) |
-| **P2** | `p2_ml/` | Feature-based ML: lag/calendar/Fourier features, gradient boosting, direct vs recursive multi-step | ⬜ planned |
+| **P2** | [`p2_ml/`](p2_ml/) | Feature-based ML: supervised framing, the extrapolation trap, lag/calendar/Fourier features, LightGBM, direct vs recursive multi-step, quantile intervals | ✅ complete (5 notebooks: 00–04) |
 | **P3** | `p3_probabilistic/` | Prediction intervals, quantile loss, conformal prediction | ⬜ planned |
 | **P4** | `p4_deep_learning/` | DL forecasting **from scratch in NumPy** (PyTorch is blocked by Smart App Control here) | ⬜ planned |
 | **P5** | `p5_capstone/` | End-to-end pipeline + model selection + report | ⬜ planned |

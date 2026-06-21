@@ -487,6 +487,102 @@ def plot_forecast(train, test=None, pred=None, lower=None, upper=None, title="",
 
 ---
 
+## `src/features.py` — series → supervised table (Project 2)
+
+### `feature_row` — the one function that prevents train/serve skew
+```python
+def feature_row(hist, pos, lags, rolls, fourier_order, period, trend):
+    f = {}
+    for L in lags:        f[f"lag{L}"] = hist[-L]
+    for w in rolls:
+        window = hist[-w:]
+        f[f"rmean{w}"] = float(np.mean(window)); f[f"rstd{w}"] = float(np.std(window))
+    if trend:             f["trend"] = float(len(hist))
+    if fourier_order:
+        q = pos.quarter
+        for k in range(1, fourier_order+1):
+            a = 2*np.pi*k*(q-1)/period
+            f[f"sin{k}"] = float(np.sin(a)); f[f"cos{k}"] = float(np.cos(a))
+    return f
+```
+- **`hist` is everything observed *before* `pos`** — `hist[-1]` is the latest known
+  value. That single convention is the anti-leakage guarantee: a feature literally
+  cannot see the target, because the target isn't in `hist`.
+- *Justification for one shared function:* this exact code builds **both** the
+  training matrix (looping `feature_row(vals[:t], …)`) **and** each step of a
+  recursive forecast (`feature_row(growing_hist, …)`). If a feature is ever wrong,
+  it's wrong identically in train and serve — so the model never sees a distribution
+  at inference it didn't see in training. Train/serve skew is designed out, not
+  tested for.
+- Seasonality comes from `pos.quarter` (deterministic, known for any future date);
+  `trend` is just `len(hist)` — included so §01 can *show* that trees can't use it.
+
+### `build_supervised`
+```python
+start = max(max(lags), max(rolls) if rolls else 0)
+for t in range(start, len(vals)):
+    rows.append(feature_row(vals[:t], idx[t], …))
+    tgt.append(vals[t] if target=="level" else vals[t] - vals[t-1])
+```
+- `start` skips the first rows that lack enough history for the longest lag/window.
+- The **target switch** is the crux of Project 2: `"level"` predicts $y_t$;
+  `"growth"` predicts $y_t-y_{t-1}$ (a first difference of the log = growth rate),
+  which is stationary so trees can handle it.
+
+## `src/ml.py` — LightGBM forecasters (recursive, direct, quantile)
+
+### `gbm_recursive_forecaster`
+```python
+hist = list(s.to_numpy())                    # log-levels, grows as we forecast
+for step in range(1, h+1):
+    pos = last_period + step
+    feat = feature_row(np.asarray(hist), pos, …)
+    yhat = float(model.predict(pd.DataFrame([feat])[X.columns])[0])
+    level = hist[-1] + yhat if target=="growth" else yhat
+    hist.append(level)                       # <-- prediction fed back in
+    preds.append(level)
+```
+- The loop **appends each prediction to `hist`**, so the next iteration's lags are
+  computed from forecasts — that's what "recursive" means. `[X.columns]` re-orders the
+  one-row frame to match training column order (LightGBM is positional).
+- For a growth target we **cumulate**: `level = hist[-1] + yhat`. The back-transform
+  `np.exp` happens once at the end.
+
+### `gbm_direct_forecaster`
+```python
+for k in range(1, h+1):
+    for t in range(start, len(vals)-k):
+        rows.append(feature_row(vals[:t+1], idx[t+k], …))     # features at t, target at t+k
+        tgt.append(vals[t+k] - vals[t] if target=="growth" else vals[t+k])
+    models[k] = LGBMRegressor(**p).fit(pd.DataFrame(rows), tgt)
+```
+- **One model per horizon `k`.** Note `vals[:t+1]` (includes `t`) paired with target
+  `t+k`: the model learns to jump `k` steps in one shot, so there's no compounding.
+  The `if not rows:` guard handles horizons too long for the sample (returns the last
+  value). At forecast time each `models[k]` predicts directly from the latest row.
+
+### `gbm_quantile_forecast`
+```python
+qs = {"lo": alpha, "mid": 0.5, "hi": 1-alpha}
+models = {k: LGBMRegressor(objective="quantile", alpha=a, **p).fit(X, y) for k,a in qs.items()}
+```
+- Three models trained with the **pinball loss** at the 5th/50th/95th percentiles →
+  a median plus a 90% band, rolled forward recursively (each quantile keeps its own
+  `hist`). A Project-3 teaser; the docstring flags the crossing / fast-widening
+  caveats.
+
+### `DEFAULT_PARAMS`
+```python
+DEFAULT_PARAMS = dict(n_estimators=400, learning_rate=0.03, num_leaves=7,
+                      min_child_samples=8, subsample=0.8, colsample_bytree=0.9,
+                      reg_lambda=1.0, verbose=-1, random_state=0)
+```
+- Deliberately **timid** — shallow trees, slow learning, regularisation — because
+  ~80 rows overfit instantly. `verbose=-1` mutes LightGBM; `random_state=0` makes
+  runs reproducible. The §03 sweep shows even `num_leaves=7` is too generous here.
+
+---
+
 ## How the notebooks compose it (the payoff)
 
 A whole model comparison collapses to a few lines because the contract is uniform:

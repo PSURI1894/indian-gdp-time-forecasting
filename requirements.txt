@@ -18,6 +18,7 @@ nbconvert
 
 # --- Forecasting libs ---
 prophet>=1.1             # additive decomposition model (P1 nb06/nb08); pulls cmdstanpy
+lightgbm>=4.5            # gradient-boosted trees (P2). NB: ships a compiled DLL —
+                        # works here despite Smart App Control (unlike PyTorch).
 # statsforecast>=2.0     # AutoARIMA / fast classical (P3) — NumPy-2-safe
-# lightgbm>=4.5          # gradient-boosted trees (P2)
 # Deep learning in P4 is pure NumPy (PyTorch is blocked by Smart App Control here).
