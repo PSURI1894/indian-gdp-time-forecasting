@@ -696,31 +696,329 @@ Both ETS-HW and SARIMA land well under **MASE 0.7**. On *this* short series the
 two are close; Holt-Winters often edges it because SARIMA has more parameters to
 estimate from few points (the bias–variance trade-off in miniature). The
 disciplined answer to "which model?" is never dogma — it's **whatever wins the
-backtest**, which is exactly what notebook 05 formalises.
+backtest**, which is exactly what the capstone (notebook 08) formalises.
 
 ---
-**Next (05):** capstone — turn this into a repeatable forecasting *decision* and a
-forecast you'd actually defend in a meeting.
+**Next (05):** the same workflow on the *annual* GDP series end-to-end — a
+different frequency and a genuine tiny-sample stress test.
 """),
     )
 
 
 # ===========================================================================
-# Notebook 05 — Capstone: a defensible forecast
+# Notebook 05 — Annual GDP end-to-end (a tiny-sample stress test)
 # ===========================================================================
 def nb05():
     return notebook(
         md(r"""
-# P1 · 05 — Capstone: a repeatable, defensible GDP forecast
+# P1 · 05 — Forecasting *annual* GDP end-to-end (small-sample edition)
 
-Everything so far, assembled into the workflow you'd run at work:
+So far we've worked the quarterly series. The **annual** real GDP series (1960–2024,
+~65 points, *no seasonality*) is a different challenge: a longer span but far fewer
+points, dominated by a single exponential trend. It's the classic macro
+"small-data" forecast — and a stress test for our workflow.
 
-1. **Backtest** a slate of candidates on identical rolling-origin folds.
-2. **Select** by MASE (must beat naive).
+We run the **same disciplined pipeline** at this new frequency:
+transform → baselines → ETS/ARIMA/Theta → backtest → forecast with intervals.
+"""),
+        co(PREAMBLE + """
+from src import baselines as B, backtest as bt, classical as C
+annual = data.load_annual()
+la = np.log(annual)
+print("annual:", annual.index.min(), "->", annual.index.max(), "| n =", len(annual))
+"""),
+        md(r"""
+### No seasonality → simpler models
+
+Annual data has no within-year cycle, so the seasonal machinery (Holt-Winters'
+seasonal term, SARIMA's seasonal orders) is irrelevant. The right tools are:
+
+* **Holt's linear trend** (ETS with trend, no seasonal),
+* **ARIMA(p,1,q)** on the log (one difference removes the trend),
+* **Theta** (a strong, cheap benchmark; `period=1` → non-seasonal).
+
+The baselines simplify too: `seasonal_naive` collapses to `naive`, so we use
+`naive`, `drift`, `mean`. MASE uses `season_length=1` (the random-walk scale).
+"""),
+        co("""
+fcs = {
+    "naive": B.naive,
+    "drift": B.drift,
+    "mean":  B.mean,
+    "Holt":  C.ets_forecaster(trend="add", seasonal=None),
+    "ARIMA(1,1,1)": C.sarima_forecaster((1, 1, 1), (0, 0, 0, 0)),
+    "Theta": C.theta_forecaster(period=1),
+}
+board = bt.compare(annual, fcs, initial=45, h=3, step=1, season_length=1)
+board.round(3)
+"""),
+        md(r"""
+> **Reading MASE at multi-step horizons.** Notice *every* model shows MASE > 1.
+> That is **expected**, not alarming: the MASE denominator is the **one-step**
+> in-sample naive error, but we're forecasting **3 years** ahead — a much harder
+> task. So here, judge models by **ranking**, not the 1.0 line: Holt/ARIMA cut the
+> error to roughly **a third** of the `naive` row. The absolute "< 1 beats naive"
+> rule is exact only for one-step forecasts.
+
+### Forecast the next 6 years with an interval
+
+We take the backtest winner (typically **Holt** or **ARIMA**) and forecast on the
+log scale, exponentiating the mean and the 95% band (so the band is asymmetric in
+levels — correct for multiplicative growth).
+"""),
+        co("""
+from statsmodels.tsa.arima.model import ARIMA
+H = 6
+m = ARIMA(la.to_numpy(), order=(1, 1, 1)).fit()
+fcres = m.get_forecast(H)
+mean = np.exp(fcres.predicted_mean)
+ci = np.exp(fcres.conf_int(alpha=0.05))
+yrs = np.arange(annual.index.max() + 1, annual.index.max() + 1 + H)
+
+fig, ax = plt.subplots()
+ax.plot(annual.index, annual.values / 1e12, color="#264653", label="GDP")
+ax.plot(yrs, mean / 1e12, color="#e76f51", lw=2, marker="o", label="ARIMA forecast")
+ax.fill_between(yrs, ci[:, 0] / 1e12, ci[:, 1] / 1e12, color="#e76f51",
+                alpha=0.2, label="95% interval")
+ax.set(title="Annual real GDP — ARIMA(1,1,1) on log, 6-year forecast",
+       xlabel="year", ylabel="₹ trillion"); ax.legend(); plt.show()
+
+implied = (np.diff(np.log(np.r_[annual.values[-1], mean])) * 100)
+print("Forecast implied annual growth (%):", np.round(implied, 2))
+"""),
+        md(r"""
+The implied growth should sit near the historical **~6%** mean — a sanity check that
+the model is extrapolating the real trend, not inventing one.
+
+**Takeaway:** the workflow is *frequency-agnostic*. With only ~65 points, lean
+models (Holt, low-order ARIMA, Theta) dominate — there simply isn't data to support
+anything fancier. Small samples reward restraint.
+
+---
+**Next (06):** two more classical approaches — **Prophet** and the **Theta method** —
+on the quarterly series.
+"""),
+    )
+
+
+# ===========================================================================
+# Notebook 06 — Prophet & Theta
+# ===========================================================================
+def nb06():
+    return notebook(
+        md(r"""
+# P1 · 06 — Two more classical tools: Prophet & Theta
+
+Beyond ETS and ARIMA, two widely used approaches:
+
+* **Prophet** (Meta) — an *additive decomposition* model:
+  $y_t = \text{trend}_t + \text{seasonality}_t + \text{holidays}_t + \varepsilon_t$,
+  fit by a Bayesian backend. Popular for being robust and "hands-off".
+* **Theta** — decomposes the series into "theta lines" (essentially SES on the
+  deseasonalised data plus half the long-run trend). Simple, fast, and famously
+  **won the M3 forecasting competition**.
+
+We hold them to the same backtest as everything else.
+"""),
+        co(PREAMBLE + """
+import logging
+for _n in ("cmdstanpy", "prophet"):                 # silence the Stan backend
+    _lg = logging.getLogger(_n); _lg.setLevel(logging.ERROR); _lg.disabled = True
+from src import baselines as B, backtest as bt, classical as C
+q = data.load_quarterly(); nsa = q["gdp_nsa"]
+"""),
+        md(r"""
+### Prophet: fit and inspect its decomposition
+
+Prophet wants a two-column frame (`ds` = date, `y` = value). We feed it the
+quarter-start timestamps and turn on yearly seasonality (our cycle), with
+multiplicative seasonality (the swing grows with the level — same reasoning as our
+log transform elsewhere).
+"""),
+        co("""
+from prophet import Prophet
+df = pd.DataFrame({"ds": nsa.index.to_timestamp(how="start"),
+                   "y": nsa.to_numpy(dtype=float)})
+m = Prophet(seasonality_mode="multiplicative", yearly_seasonality=True,
+            weekly_seasonality=False, daily_seasonality=False)
+m.fit(df)
+future = m.make_future_dataframe(periods=8, freq="QS")
+forecast = m.predict(future)
+fig = m.plot_components(forecast); plt.show()
+"""),
+        md(r"""
+The components panel is Prophet's selling point: it shows the inferred **trend**
+(with automatic changepoints) and the **yearly seasonal** shape separately — an
+interpretable decomposition you can hand to a stakeholder.
+
+### Prophet's forecast with its native interval
+"""),
+        co("""
+fig, ax = plt.subplots()
+hist = nsa.iloc[-24:]
+ax.plot(hist.index.to_timestamp(how="start"), hist.values / 1e6,
+        color="#264653", label="history")
+fut = forecast.tail(8)
+ax.plot(fut["ds"], fut["yhat"] / 1e6, color="#e76f51", lw=2, marker="o", label="Prophet")
+ax.fill_between(fut["ds"], fut["yhat_lower"] / 1e6, fut["yhat_upper"] / 1e6,
+                color="#e76f51", alpha=0.2, label="interval")
+ax.set(title="Prophet — 8-quarter forecast", ylabel="real GDP (level)"); ax.legend()
+plt.show()
+"""),
+        md(r"""
+### The backtest verdict (Prophet & Theta vs the field)
+
+Prophet refits a Bayesian model each fold, so it's the slowest model here — we use
+`step=2` to thin the folds and keep runtime sane (the MASE estimate stays robust).
+"""),
+        co("""
+fcs = {
+    "seasonal_naive(4)": B.seasonal_naive(4),
+    "Holt-Winters":      C.ets_forecaster(trend="add", seasonal="add", seasonal_periods=4),
+    "SARIMA(1,1,1)(0,1,0)4": C.sarima_forecaster((1, 1, 1), (0, 1, 0, 4)),
+    "Theta":             C.theta_forecaster(period=4),
+    "Prophet":           C.prophet_forecaster(),
+}
+bt.compare(nsa, fcs, initial=40, h=4, step=2, season_length=4).round(3)
+"""),
+        md(r"""
+Both **Prophet and Theta comfortably beat the baselines** (MASE ≈ 0.73) but land
+*behind* the tuned SARIMA/Holt-Winters on this short, clean series. That's a common
+real-world pattern: Prophet's strengths — many changepoints, holiday effects, messy
+business data with strong multi-seasonality — aren't what a tidy 88-point GDP series
+needs. **Theta** punches far above its complexity, which is why it's a respected
+benchmark. Lesson: *popular ≠ best for your data* — the backtest decides.
+
+---
+**Next (07):** ARIMAX — feeding the model **exogenous** information (deterministic
+seasonality and an event dummy).
+"""),
+    )
+
+
+# ===========================================================================
+# Notebook 07 — ARIMAX (exogenous regressors)
+# ===========================================================================
+def nb07():
+    return notebook(
+        md(r"""
+# P1 · 07 — ARIMAX: giving ARIMA outside information
+
+Plain (S)ARIMA only looks at the series' own past. **ARIMAX** adds **exogenous
+regressors** $X_t$ — external variables that help explain $y_t$:
+
+$$\phi(B)(1-B)^d\,(y_t - \beta^\top X_t) = \theta(B)\,\varepsilon_t.$$
+
+We demonstrate two deterministic (fully reproducible) kinds of exog:
+
+1. **Fourier terms** → smooth seasonality as sine/cosine regressors
+   (*dynamic harmonic regression*) — an alternative to seasonal differencing.
+2. **An intervention dummy** → a flag for the COVID quarters (2020 Q2/Q3) so the
+   shock is *explained*, not baked into the trend.
+
+A real driver (interest rate, monsoon, IIP) would plug into the exact same slot.
+"""),
+        co(PREAMBLE + """
+from statsmodels.tsa.statespace.sarimax import SARIMAX
+from src import baselines as B, backtest as bt, classical as C
+q = data.load_quarterly(); nsa = q["gdp_nsa"]
+"""),
+        md(r"""
+### 1. Fourier seasonality (dynamic harmonic regression)
+
+Instead of differencing away the season, we add Fourier pairs as regressors and let
+ARIMA model the *non*-seasonal dynamics. We backtest it against the
+seasonal-differencing SARIMA to see which wins.
+"""),
+        co("""
+fcs = {
+    "seasonal_naive(4)":     B.seasonal_naive(4),
+    "SARIMA(1,1,1)(0,1,0)4": C.sarima_forecaster((1, 1, 1), (0, 1, 0, 4)),
+    "ARIMAX Fourier(2)":     C.arimax_forecaster((1, 1, 1), use_fourier=True, fourier_order=2),
+    "ARIMAX Fourier(2)+covid": C.arimax_forecaster((1, 1, 1), use_fourier=True,
+                                                   fourier_order=2, covid_dummy=True),
+}
+bt.compare(nsa, fcs, initial=40, h=4, step=1, season_length=4).round(3)
+"""),
+        md(r"""
+On *this* series, **seasonal differencing (SARIMA) beats Fourier-ARIMAX.** That's an
+important, non-obvious lesson:
+
+* **Fourier** assumes a *fixed* seasonal shape and shines when the period is **large**
+  (m = 52 weekly, m = 365 daily) where a seasonal difference would be wasteful or
+  impossible to estimate.
+* **Seasonal differencing** *adapts* to a slowly changing seasonal pattern and is
+  ideal for small m (here m = 4). Right tool, right job.
+
+The COVID dummy doesn't improve point accuracy either — which sets up the real
+reason to use an intervention dummy: **diagnostics**, not the backtest.
+
+### 2. The intervention dummy's real job: cleaning the 2020 shock
+
+Fit ARIMA on the quarterly **YoY growth** with and without a COVID dummy, and look
+at the **2020 residual**. Without the dummy, the −20%+ pandemic crash shows up as a
+giant residual that distorts the variance and the AR estimates; with it, the shock
+is absorbed by a coefficient and the residuals behave.
+"""),
+        co("""
+g = np.log(nsa).diff(4).dropna() * 100                 # YoY growth, %
+g.index = g.index.to_timestamp(how="start")            # DatetimeIndex for clean access
+covid = pd.DataFrame(
+    {"covid": ((g.index.year == 2020) & (g.index.quarter.isin([2, 3]))).astype(float)},
+    index=g.index)
+
+# AR(1) with a constant (trend='c'), with and without the COVID exog
+m_no = SARIMAX(g, order=(1, 0, 0), trend="c").fit(disp=False)
+m_yes = SARIMAX(g, exog=covid, order=(1, 0, 0), trend="c").fit(disp=False)
+
+resid_no, resid_yes = m_no.resid, m_yes.resid
+print("Max |residual| in 2020  without dummy: %.1f pp" % resid_no.loc["2020"].abs().max())
+print("Max |residual| in 2020  with dummy   : %.1f pp" % resid_yes.loc["2020"].abs().max())
+print("Residual std    without / with       : %.2f / %.2f" % (resid_no.std(), resid_yes.std()))
+print("COVID dummy coefficient              : %.1f pp (the modelled shock size)"
+      % m_yes.params["covid"])
+
+fig, ax = plt.subplots()
+ax.plot(resid_no.index, resid_no.values, label="no dummy", color="#e76f51")
+ax.plot(resid_yes.index, resid_yes.values, label="with COVID dummy", color="#2a9d8f")
+ax.axhline(0, color="k", lw=0.8)
+ax.set(title="AR(1) residuals on YoY growth — the dummy absorbs the 2020 shock",
+       ylabel="residual (pp)"); ax.legend(); plt.show()
+"""),
+        md(r"""
+With the dummy, the monstrous 2020 residual collapses and the residual std shrinks —
+the model is no longer fighting an event it was never going to predict. **That** is
+when exogenous regressors earn their place: encoding *known* external facts (events,
+policy changes, campaigns) so the stochastic part of the model stays clean. Whether
+they improve out-of-sample *accuracy* is, as always, a question for the backtest.
+
+---
+**Next (08):** the capstone — bake **all** eight model families off against each
+other and produce the final, defensible forecast.
+"""),
+    )
+
+
+# ===========================================================================
+# Notebook 08 — Capstone: a defensible forecast (all methods)
+# ===========================================================================
+def nb08():
+    return notebook(
+        md(r"""
+# P1 · 08 — Capstone: the full bake-off & a defensible forecast
+
+Everything from P1, assembled into the workflow you'd run at work — now with the
+**complete** classical slate (baselines, ETS, SARIMA, Theta, Prophet, ARIMAX):
+
+1. **Backtest** every candidate on identical rolling-origin folds.
+2. **Select** by MASE.
 3. **Refit the winner on all data** and forecast with an interval.
 4. **Interpret & caveat** — what could break this.
 """),
         co(PREAMBLE + """
+import logging
+for _n in ("cmdstanpy", "prophet"):                 # silence the Stan backend
+    _lg = logging.getLogger(_n); _lg.setLevel(logging.ERROR); _lg.disabled = True
 from src import baselines as B, backtest as bt, classical as C
 q = data.load_quarterly(); nsa = q["gdp_nsa"]
 
@@ -732,11 +1030,14 @@ candidates = {
                                               seasonal_periods=4, damped_trend=True),
     "SARIMA(1,1,1)(0,1,0)4": C.sarima_forecaster((1, 1, 1), (0, 1, 0, 4)),
     "SARIMA(1,1,1)(1,1,1)4": C.sarima_forecaster((1, 1, 1), (1, 1, 1, 4)),
+    "Theta":                 C.theta_forecaster(period=4),
+    "Prophet":               C.prophet_forecaster(),
+    "ARIMAX Fourier(2)":     C.arimax_forecaster((1, 1, 1), use_fourier=True, fourier_order=2),
 }
 """),
-        md("### 1–2. Backtest & select"),
+        md("### 1–2. Backtest & select (step=2 — Prophet refits are slow)"),
         co("""
-board = bt.compare(nsa, candidates, initial=40, h=4, step=1, season_length=4)
+board = bt.compare(nsa, candidates, initial=40, h=4, step=2, season_length=4)
 print(board.round(3).to_string())
 winner = board.index[0]
 print("\\nWinner by MASE:", winner)
@@ -751,10 +1052,10 @@ if winner.startswith("SARIMA"):
     nums = [int(n) for n in re.findall(r"\\d+", winner)]
     order, sorder = tuple(nums[:3]), tuple(nums[3:7])
     mean, lo, hi = C.sarima_forecast_pi(nsa, H, order=order, seasonal_order=sorder)
-else:  # an ETS winner -> approximate PI via the backtest residual spread
+else:  # a non-SARIMA winner -> approximate PI via the backtest residual spread
     f = candidates[winner]
     mean = f(nsa, H)
-    res = bt.rolling_origin(nsa, f, initial=40, h=4, step=1)
+    res = bt.rolling_origin(nsa, f, initial=40, h=4, step=2)
     sd = (res["y_true"] - res["y_pred"]).std()
     lo, hi = mean - 1.96 * sd, mean + 1.96 * sd
 
@@ -789,8 +1090,9 @@ print(implied.round(2))
 * **Point vs density.** We report a 95% interval, but it assumes the residual
   distribution is stable and (for SARIMA) roughly Gaussian-in-log. Project 3
   replaces this with proper probabilistic / conformal intervals.
-* **No exogenous drivers.** GDP responds to rates, monsoon, global demand. We used
-  none — Project 2 adds feature-based ML to bring those in.
+* **Only deterministic exog.** ARIMAX (07) used Fourier terms and an event dummy —
+  *known* external facts. We used no **data-driven** drivers (rates, monsoon, global
+  demand). Project 2 adds feature-based ML to bring those in.
 
 ### The office recipe (reusable checklist)
 
@@ -798,13 +1100,14 @@ print(implied.round(2))
 2. **Decompose** and measure seasonal strength.
 3. **Test stationarity** (ADF + KPSS) → differencing orders.
 4. Establish **baselines** + pick a **metric** (MASE) + a **backtest** (rolling origin).
-5. Try **ETS** and **(S)ARIMA**; **diagnose residuals**.
+5. Try a **slate** — ETS, (S)ARIMA, Theta, Prophet, ARIMAX; **diagnose residuals**.
 6. **Select by backtest**, refit on all data, forecast **with intervals**.
 7. Write the **caveats**. A forecast without an interval and a caveat is a guess.
 
 ---
-**Project 1 complete.** You can now diagnose, model, evaluate, and defend a
-classical forecast. Project 2 moves to feature-based machine-learning forecasting.
+**Project 1 complete.** Across 8 notebooks you can now diagnose, transform, model
+(the full classical slate), evaluate honestly, and defend a forecast. Project 2
+moves to feature-based machine-learning forecasting.
 """),
     )
 
@@ -817,7 +1120,10 @@ def main():
         "02_baselines_evaluation.ipynb": nb02,
         "03_exponential_smoothing.ipynb": nb03,
         "04_arima_sarima.ipynb": nb04,
-        "05_capstone.ipynb": nb05,
+        "05_annual_forecast.ipynb": nb05,
+        "06_prophet_theta.ipynb": nb06,
+        "07_arimax.ipynb": nb07,
+        "08_capstone.ipynb": nb08,
     }
     for fname, fn in builders.items():
         nbf.write(fn(), NB_DIR / fname)

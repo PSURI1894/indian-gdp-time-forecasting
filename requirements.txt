@@ -16,7 +16,8 @@ jupyter
 ipykernel
 nbconvert
 
-# --- Forecasting libs (added as later projects need them) ---
-# statsforecast>=2.0     # AutoARIMA / fast classical (P1 stretch, P3) — NumPy-2-safe
+# --- Forecasting libs ---
+prophet>=1.1             # additive decomposition model (P1 nb06/nb08); pulls cmdstanpy
+# statsforecast>=2.0     # AutoARIMA / fast classical (P3) — NumPy-2-safe
 # lightgbm>=4.5          # gradient-boosted trees (P2)
 # Deep learning in P4 is pure NumPy (PyTorch is blocked by Smart App Control here).

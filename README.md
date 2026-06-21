@@ -10,7 +10,7 @@ so it transfers to real forecasting work.
 
 | # | Folder | Focus | Status |
 |---|--------|-------|--------|
-| **P1** | [`p1_foundations/`](p1_foundations/) | Foundations & classical: transforms, decomposition, stationarity, baselines, **honest evaluation**, ETS, ARIMA/SARIMA | ✅ complete (6 notebooks) |
+| **P1** | [`p1_foundations/`](p1_foundations/) | Foundations & classical: transforms, decomposition, stationarity, baselines, **honest evaluation**, ETS, ARIMA/SARIMA, Theta, Prophet, ARIMAX | ✅ complete (9 notebooks: 00–08) |
 | **P2** | `p2_ml/` | Feature-based ML: lag/calendar/Fourier features, gradient boosting, direct vs recursive multi-step | ⬜ planned |
 | **P3** | `p3_probabilistic/` | Prediction intervals, quantile loss, conformal prediction | ⬜ planned |
 | **P4** | `p4_deep_learning/` | DL forecasting **from scratch in NumPy** (PyTorch is blocked by Smart App Control here) | ⬜ planned |

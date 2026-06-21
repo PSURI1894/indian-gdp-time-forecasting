@@ -101,7 +101,35 @@ the seasonality, so no seasonal AR/MA is needed (parsimony on a short series).
 **Ljung-Box** tests $H_0$: "no autocorrelation up to lag $k$"; we want a *high*
 p-value. Also check the residual histogram / Q-Q for approximate normality.
 
-## 7. Metrics — MASE
+## 7. Theta, Prophet & ARIMAX
+
+**Theta method.** Deseasonalise, then build two *theta lines* by scaling the second
+difference of the series by $\theta$: $\theta=0$ gives the long-run linear trend,
+$\theta=2$ exaggerates local curvature. The classic Theta forecast averages the
+$\theta=0$ line (extrapolated linearly) with the $\theta=2$ line (extrapolated by
+SES), then re-seasonalises. It is provably close to **SES with drift**, which is why
+it is so cheap yet competitive (it won the M3 competition).
+
+**Prophet.** A *structural / additive decomposition* model:
+$$y_t = g(t) + s(t) + h(t) + \varepsilon_t,$$
+where $g(t)$ is a piecewise-linear (or logistic) **trend with automatic
+changepoints**, $s(t)$ is **Fourier-series seasonality**, $h(t)$ encodes holidays,
+fit by a Bayesian backend (MAP by default). Its edge is interpretability and
+robustness on messy business data with many regimes — not tidy, short macro series.
+
+**ARIMAX & dynamic harmonic regression.** Add exogenous regressors $X_t$:
+$$\phi(B)(1-B)^d\big(y_t - \beta^\top X_t\big) = \theta(B)\,\varepsilon_t.$$
+Two flavours used here:
+- **Fourier terms** $\{\sin(2\pi k t/m), \cos(2\pi k t/m)\}_{k=1}^{K}$ as $X_t$ →
+  *dynamic harmonic regression*: smooth, **fixed-shape** seasonality. Superior when
+  $m$ is large (weekly $m{=}52$, daily $m{=}365$), where a seasonal difference is
+  costly. For small $m{=}4$, seasonal differencing — which **adapts** to a drifting
+  pattern — usually wins (and does here).
+- **Intervention dummy** — an indicator for known shocks (e.g. COVID 2020 Q2/Q3).
+  Its coefficient absorbs the shock so it doesn't corrupt the trend/AR estimates;
+  the payoff is in **residual diagnostics**, not necessarily point accuracy.
+
+## 8. Metrics — MASE
 
 $$\text{MASE} = \frac{\frac1H\sum_{h}|y_h-\hat y_h|}
 {\frac{1}{n-m}\sum_{t=m+1}^{n}|y_t - y_{t-m}|}.$$
@@ -114,7 +142,12 @@ The denominator is the **in-sample seasonal-naive MAE**. Hence:
 Scale-free (compare across series), defined even when $y=0$ (unlike MAPE), and
 symmetric (unlike MAPE, which over-penalises over-forecasts).
 
-## 8. Rolling-origin backtesting
+> **Multi-step caveat.** The "< 1 beats naive" rule is exact only for **one-step**
+> forecasts, because the denominator is the *one-step* in-sample naive error. At
+> horizon $h>1$ even good models often score MASE $>1$ (see the annual notebook) —
+> there, rank models against each other and against the naive row, not against 1.0.
+
+## 9. Rolling-origin backtesting
 
 Single train/test splits are high-variance and can leak the future. Instead, for
 cutoffs $t_0 < t_1 < \dots$, train on $[\,0,\,t_i\,]$, forecast $[\,t_i+1,\,t_i+h\,]$,
@@ -123,16 +156,24 @@ and average errors over all folds (expanding or sliding window). This estimates
 
 ---
 
-## Empirical results (India real GDP, quarterly NSA, h = 4)
+## Empirical results — full bake-off (quarterly NSA, h = 4, rolling origin)
 
 | model | MASE | note |
 |-------|------|------|
-| **SARIMA(1,1,1)(0,1,0)₄** | **0.612** | AIC-selected *and* backtest winner |
-| Holt-Winters (damped) | 0.639 | |
-| Holt-Winters | 0.640 | |
-| SARIMA(1,1,1)(1,1,1)₄ | 0.693 | over-parameterised for the sample |
-| drift | 1.014 | baseline |
-| seasonal_naive(4) | 1.263 | baseline (the MASE denominator) |
+| **SARIMA(1,1,1)(0,1,0)₄** | **0.573** | AIC-selected *and* backtest winner |
+| Holt-Winters | 0.608 | |
+| Holt-Winters (damped) | 0.650 | |
+| SARIMA(1,1,1)(1,1,1)₄ | 0.655 | over-parameterised for the sample |
+| Prophet | 0.729 | beats baselines; not built for tidy short series |
+| Theta | 0.734 | superb effort-to-accuracy ratio (M3 winner) |
+| ARIMAX Fourier(2) | 0.973 | fixed-shape seasonality loses to seasonal differencing here |
+| drift | 1.022 | baseline |
+| seasonal_naive(4) | 1.265 | baseline (the MASE denominator) |
 
 Final 8-quarter forecast implies **~6.6% YoY growth**, matching the historical mean
 — a clean sanity check.
+
+**Intervention analysis (notebook 07).** Adding a COVID dummy to an AR(1) on YoY
+growth cuts the worst 2020 residual from **31.4 → 10.5 pp** (dummy coefficient
+**−23 pp** = the modelled shock) and the residual std from **4.36 → 3.18** — the
+model stops fighting an event it could never have predicted.

@@ -392,6 +392,72 @@ return pd.DataFrame(rows).sort_values("AIC").reset_index(drop=True)
 - `try/except: continue` — some order combos fail to converge; we skip them rather
   than abort the whole search. Returns sorted by AIC so row 0 is the pick.
 
+### `theta_forecaster`
+```python
+s = pd.Series(np.log(train.to_numpy()) if use_log else train.to_numpy(), index=train.index)
+fc = ThetaModel(s, period=period).fit().forecast(h)
+return np.exp(fc) if use_log else np.asarray(fc)
+```
+- We rebuild a `Series` **with the original index** because `ThetaModel`
+  deseasonalises internally and needs the period structure. `period=4` for
+  quarterly, `period=1` to switch seasonality off (the annual notebook). Same
+  log-in / exp-out convention as the other wrappers, so it's drop-in comparable.
+
+### `prophet_forecaster`
+```python
+def f(train, h):
+    from prophet import Prophet                 # lazy import
+    ds = train.index.to_timestamp(how="start")
+    df = pd.DataFrame({"ds": ds, "y": train.to_numpy()})
+    m = Prophet(seasonality_mode="multiplicative", yearly_seasonality=True,
+                weekly_seasonality=False, daily_seasonality=False).fit(df)
+    future = m.make_future_dataframe(periods=h, freq="QS")
+    return m.predict(future)["yhat"].to_numpy()[-h:]
+```
+- **Lazy `import prophet` inside `f`** — *justification:* Prophet pulls a heavy Stan
+  backend; importing it lazily means the whole toolkit (and every other model) still
+  works if Prophet isn't installed. You only pay for it if you actually use it.
+- Prophet speaks **timestamps**, so we convert the `PeriodIndex` to quarter starts;
+  `multiplicative` seasonality mirrors our log reasoning (swing grows with level);
+  the weekly/daily cycles are switched off (irrelevant to quarterly data). We slice
+  `[-h:]` because `predict` returns fitted history **plus** the future.
+- (Module top sets `logging.getLogger("cmdstanpy"/"prophet").setLevel(ERROR)` so the
+  Stan backend doesn't spam the notebooks.)
+
+### `_build_exog` — deterministic regressors for ARIMAX
+```python
+future_index = pd.period_range(train_index[-1] + 1, periods=h, freq=freq)
+if use_fourier:
+    dp = DeterministicProcess(train_index, additional_terms=[Fourier(period, fourier_order)])
+    parts_in.append(dp.in_sample()); parts_out.append(dp.out_of_sample(h))
+if covid_dummy:
+    pulse = lambda idx: pd.DataFrame({"covid": ((idx.year==2020) & idx.quarter.isin([2,3])).astype(float)}, index=idx)
+    parts_in.append(pulse(train_index)); parts_out.append(pulse(future_index))
+```
+- The crux of ARIMAX is that the exog must be **known for the future too** — you
+  can't forecast with a regressor you don't have. So everything here builds **two
+  aligned blocks**: `in_sample` (length = train) and `out_of_sample(h)` (length = h).
+- `DeterministicProcess` guarantees the Fourier terms **continue the same phase** out
+  of sample (no seam at the forecast boundary). The COVID `pulse` is purely
+  date-driven, so it's trivially 0 in the future — exactly right for a one-off event.
+- *Justification for deterministic exog:* fully reproducible, no extra data to fetch
+  or align, and it isolates the *mechanism* of ARIMAX. A real driver series would
+  replace these blocks with no change to `arimax_forecaster`.
+
+### `arimax_forecaster`
+```python
+y = _prep(train, use_log)
+Xin, Xout = _build_exog(train.index, h, use_fourier, fourier_order, period, covid_dummy)
+model = SARIMAX(y, exog=None if Xin is None else Xin.to_numpy(),
+                order=order, seasonal_order=seasonal_order,
+                enforce_stationarity=False, enforce_invertibility=False).fit(disp=False)
+fc = model.forecast(h, exog=None if Xout is None else Xout.to_numpy())
+```
+- Same `SARIMAX` engine as `sarima_forecaster`, now with `exog`. The forecast call
+  **must be given `Xout`** — the future regressor values — or it can't project the
+  regression part. With Fourier exog and no seasonal order, this *is* dynamic
+  harmonic regression; add `covid_dummy=True` to fold in the intervention.
+
 ---
 
 ## `src/plots.py` — thin, on purpose
