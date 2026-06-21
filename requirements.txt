@@ -1,0 +1,22 @@
+# Time Series Forecasting — India GDP
+# Pinned to a known-good Python 3.12 wheel set (same family that works in
+# practice-eda). NumPy held < 2.2 for broad statsmodels/statsforecast compat.
+
+# --- Core scientific stack (Project 1+) ---
+pandas>=2.2,<3
+numpy>=1.26,<2.2
+scipy>=1.13
+matplotlib>=3.8
+seaborn>=0.13
+statsmodels>=0.14        # decomposition, ADF/KPSS, ACF/PACF, ETS, ARIMA/SARIMA
+scikit-learn>=1.4        # metrics, ML baselines
+
+# --- Notebook tooling ---
+jupyter
+ipykernel
+nbconvert
+
+# --- Forecasting libs (added as later projects need them) ---
+# statsforecast>=2.0     # AutoARIMA / fast classical (P1 stretch, P3) — NumPy-2-safe
+# lightgbm>=4.5          # gradient-boosted trees (P2)
+# Deep learning in P4 is pure NumPy (PyTorch is blocked by Smart App Control here).
